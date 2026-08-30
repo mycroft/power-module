@@ -1,0 +1,21 @@
+[package]
+name = "power-module"
+version = "0.1.0"
+edition = "2024"
+description = "AC adapter and battery state for the CLI and for waybar"
+license = "MIT"
+
+[dependencies]
+# parse + serde only: no derive macros, no TOML writer.
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
+
+[[bin]]
+name = "power-module"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

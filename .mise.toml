@@ -1,0 +1,21 @@
+# Uncomment to have mise manage the toolchain. Left off by default because rust
+# already comes from nix here, and enabling this makes mise fetch its own
+# toolchain and shadow it.
+# [tools]
+# rust = "1.98.0"
+
+[tasks.build]
+description = "Build the release binary"
+run = "cargo build --release"
+sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+outputs = ["target/release/power-module"]
+
+[tasks.test]
+description = "Run the test suite"
+run = "cargo test $@"
+sources = ["Cargo.toml", "Cargo.lock", "src/**/*.rs"]
+
+[tasks.install]
+description = "Build and install the binary to $PREFIX (default ~/.local)"
+depends = ["build"]
+run = "install -Dm755 target/release/power-module ${PREFIX:-$HOME/.local}/bin/power-module"

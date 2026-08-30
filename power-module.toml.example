@@ -1,0 +1,66 @@
+# power-module.toml — every setting is optional; what is left out keeps the
+# built-in default shown here. Command-line flags always win over this file.
+#
+# Copy to one of:
+#   ~/.config/power-module.toml
+#   ~/.config/power-module/power-module.toml
+
+[general]
+# What to report when neither --ac nor --battery is given: ac, battery, or all.
+scope = "all"
+# Which supply to treat as the AC adapter. Omit to pick automatically.
+# adapter = "AC"
+# Terminal colour: auto, always, or never. auto colours only on a terminal.
+color = "auto"
+
+[levels]
+# Charge bands, in percent. These decide both the colour of the terminal
+# output and the CSS class waybar receives. Defaults match the `states` of
+# waybar's own battery module.
+full = 98
+warning = 30
+critical = 15
+
+[colors]
+# Terminal colours only — waybar takes its colours from CSS, keyed off the
+# classes in the JSON. Names: default, black, red, green, yellow, blue,
+# magenta, cyan, white, grey, and bright-* variants of each.
+
+# The cord.
+plugged = "green"
+unplugged = "yellow"
+
+# The battery, when the charge level is comfortable.
+charging = "green"
+full = "green"
+discharging = "default"     # "default" is the terminal's own foreground
+not_charging = "default"    # held at a charge threshold: deliberate, not a problem
+
+# The battery, when it is not. These override the four above.
+warning = "yellow"
+critical = "red"
+critical_charging = "yellow" # low but recovering
+
+# Anything unreadable.
+unknown = "red"
+
+[formats]
+# {field} interpolates a value. [...] is an optional group: if any field inside
+# it is unknown, the whole group disappears — brackets, literal text and all.
+# That is how one line covers a battery that reports a runtime and one that
+# does not. Write {{ }} [[ ]] for literal brackets.
+#
+#   ac, bar_ac  take {name} {state}
+#   battery     takes {name} {status} {percent} {time} {caption} {level}
+#   summary,    take       {status} {percent} {time} {caption} {level}
+#   bar
+
+# The lines printed on the terminal.
+ac = "{name}: {state}"
+battery = "{name}: {status}[ {percent}%][ ({time} {caption})]"
+# Shown above the per-battery lines on a machine with more than one.
+summary = "Battery: {status}[ {percent}%][ ({time} {caption})]"
+
+# The waybar `text` field, i.e. what `{}` renders as in a module's format.
+bar = "[{percent}%][ {time}]"
+bar_ac = "{state}"
