@@ -44,6 +44,7 @@ $ power-module --quiet && echo "on mains"
 | `--ac` | only the AC adapter |
 | `--battery` | only the batteries |
 | `-w`, `--waybar` | one JSON object for waybar (`--json` also works) |
+| `-f`, `--full` | add the supporting numbers under each line |
 | `-q`, `--quiet` | print nothing; exit `0` on external power, `1` on battery |
 | `--color <WHEN>` | `auto` (default), `always`, `never` |
 | `--config <PATH>` | read this file instead of searching |
@@ -69,15 +70,17 @@ much trouble you are in, because that is the one thing the cord cannot tell you:
 
 | | |
 | --- | --- |
-| charging or full | green |
-| discharging, or held at a charge threshold | terminal default |
+| charging, full, or plugged in and holding | green |
+| discharging | terminal default |
 | at or below 30% | yellow |
 | at or below 15% | red — or yellow while charging, since it is recovering |
 | unreadable | red |
 
-Above 30% a discharging battery is left uncoloured on purpose. Painting a
-healthy battery green would compete with the cord's green and make the colour
-mean less when it matters; red stays rare enough to be worth reacting to.
+Green means "nothing to do": charging, full, or plugged in and holding at a
+level the firmware is happy with. A *discharging* battery above 30% is left
+uncoloured on purpose — painting it green too would make green mean nothing at
+all, and red stays rare enough to be worth reacting to. To colour that case as
+well, set `discharging = "green"` under `[colors]`.
 
 ## Configuration
 
@@ -123,7 +126,7 @@ unplugged = "yellow"
 charging = "green"
 full = "green"
 discharging = "default"      # the terminal's own foreground
-not_charging = "default"
+not_charging = "green"       # plugged in and holding: nothing to do
 warning = "yellow"
 critical = "red"
 critical_charging = "yellow"
@@ -252,9 +255,9 @@ The state is reported four ways, so you can use whichever suits:
 
 /* the battery: the level speaks first, the status fills in the quiet cases */
 #custom-battery.charging,
-#custom-battery.full         { color: #66ff00; }
-#custom-battery.discharging,
-#custom-battery.not-charging { color: #ffffff; }
+#custom-battery.full,
+#custom-battery.not-charging { color: #66ff00; }
+#custom-battery.discharging  { color: #ffffff; }
 #custom-battery.warning      { color: yellow; }
 #custom-battery.unknown      { color: #f53c3c; }
 

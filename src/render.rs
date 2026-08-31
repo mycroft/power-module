@@ -120,9 +120,92 @@ fn ac_fields(sources: &[Source], state: State) -> Vec<(&'static str, Option<Stri
     ]
 }
 
+/// Scale a sysfs micro-unit into its human unit.
+fn scaled(value: f64) -> f64 {
+    value / 1e6
+}
+
+/// The supporting numbers: what the pack holds, how worn it is, what is
+/// flowing, and any firmware charge limit. Rows whose values the driver does
+/// not publish are left out rather than shown empty.
+fn battery_detail(entry: &Battery) -> Vec<(&'static str, String)> {
+    let mut rows = Vec::new();
+
+    if let (Some(unit), Some(now), Some(full)) = (entry.unit, entry.now, entry.full) {
+        let suffix = unit.capacity_suffix();
+        rows.push((
+            "charge",
+            format!("{:.2} {suffix} of {:.2} {suffix}", scaled(now), scaled(full)),
+        ));
+    }
+    if let (Some(health), Some(design), Some(unit)) = (entry.health(), entry.design, entry.unit) {
+        rows.push((
+            "health",
+            format!("{health:.0}% of design ({:.2} {})", scaled(design), unit.capacity_suffix()),
+        ));
+    }
+    if let (Some(rate), Some(unit)) = (entry.rate, entry.unit) {
+        let mut text = format!("{:.2} {}", scaled(rate), unit.rate_suffix());
+        if let Some(voltage) = entry.voltage {
+            text.push_str(&format!(" at {:.3} V", scaled(voltage)));
+        }
+        rows.push(("rate", text));
+    }
+    if let Some(cycles) = entry.cycles {
+        rows.push(("cycles", cycles.to_string()));
+    }
+    // 0 and 100 are the values the firmware uses to mean "no limit".
+    let limits = match (entry.charge_start, entry.charge_end) {
+        (Some(0), Some(100)) => Some("none set".to_string()),
+        (Some(start), Some(end)) => Some(format!("resume below {start}%, stop at {end}%")),
+        (Some(start), None) => Some(format!("resume below {start}%")),
+        (None, Some(end)) => Some(format!("stop at {end}%")),
+        (None, None) => None,
+    };
+    if let Some(limits) = limits {
+        rows.push(("limits", limits));
+    }
+    if let Some(technology) = &entry.technology {
+        rows.push(("type", technology.clone()));
+    }
+    rows
+}
+
+/// For one adapter its type; for several, which of them is carrying the load.
+fn ac_detail(sources: &[Source]) -> Vec<(String, String)> {
+    match sources {
+        [only] => vec![("type".to_string(), only.kind.clone())],
+        several => several
+            .iter()
+            .map(|source| {
+                let state = match source.state {
+                    State::Plugged => "online",
+                    State::Unplugged => "offline",
+                };
+                (source.name.clone(), format!("{}, {state}", source.kind))
+            })
+            .collect(),
+    }
+}
+
+/// Detail rows are laid out as an aligned two-column block under their line.
+fn detail_lines<K: AsRef<str>>(rows: &[(K, String)], indent: usize) -> Vec<(String, Colour)> {
+    let width = rows.iter().map(|(label, _)| label.as_ref().len()).max().unwrap_or(0);
+    rows.iter()
+        .map(|(label, value)| {
+            let label = label.as_ref();
+            (
+                format!("{:indent$}{label:width$}  {value}", "", indent = indent + 2),
+                // Supporting numbers, not a state to react to.
+                Colour::DEFAULT,
+            )
+        })
+        .collect()
+}
+
 /// One `(line, colour)` per thing worth reporting. Several batteries get a
 /// combined line first, then one indented line each.
-fn lines(scope: Scope, reading: &Reading, config: &Config) -> Vec<(String, Colour)> {
+fn lines(scope: Scope, reading: &Reading, config: &Config, detail: bool) -> Vec<(String, Colour)> {
     let mut lines = Vec::new();
     let (levels, palette) = (&config.levels, &config.palette);
 
@@ -132,6 +215,9 @@ fn lines(scope: Scope, reading: &Reading, config: &Config) -> Vec<(String, Colou
             config.formats.ac.render(&ac_fields(&reading.sources, state)),
             ac_colour(state, palette),
         ));
+        if detail {
+            lines.extend(detail_lines(&ac_detail(&reading.sources), 0));
+        }
     }
 
     if scope != Scope::Ac {
@@ -166,18 +252,33 @@ fn lines(scope: Scope, reading: &Reading, config: &Config) -> Vec<(String, Colou
             for entry in &reading.batteries {
                 let (line, colour) = entry_line(entry);
                 lines.push((format!("  {line}"), colour));
+                if detail {
+                    lines.extend(detail_lines(&battery_detail(entry), 2));
+                }
             }
         } else {
-            lines.extend(reading.batteries.iter().map(entry_line));
+            for entry in &reading.batteries {
+                lines.push(entry_line(entry));
+                if detail {
+                    lines.extend(detail_lines(&battery_detail(entry), 0));
+                }
+            }
         }
     }
 
     lines
 }
 
-/// The lines a human reads.
-pub fn text(scope: Scope, reading: &Reading, config: &Config, colour: bool) -> String {
-    lines(scope, reading, config)
+/// The lines a human reads. `detail` adds the supporting numbers under each
+/// line, which is what `--full` asks for.
+pub fn text(
+    scope: Scope,
+    reading: &Reading,
+    config: &Config,
+    colour: bool,
+    detail: bool,
+) -> String {
+    lines(scope, reading, config, detail)
         .iter()
         .map(|(line, shade)| shade.paint(line, colour))
         .collect::<Vec<_>>()
@@ -269,8 +370,9 @@ fn render_or(template: &Template, fields: &[(&str, Option<String>)], fallback: &
 }
 
 pub fn waybar(scope: Scope, reading: &Reading, config: &Config) -> Waybar {
-    // The tooltip is styled by CSS, never by escape codes.
-    let tooltip = text(scope, reading, config, false);
+    // The tooltip has room for the whole picture, and is styled by CSS rather
+    // than by escape codes.
+    let tooltip = text(scope, reading, config, false, true);
     let summary = battery::summarise(&reading.batteries);
 
     // AC-only, or a machine with no battery at all: report the cord.
@@ -338,6 +440,12 @@ mod tests {
                 Status::Charging => (full - now) / hours,
                 _ => now / hours,
             }),
+            design: Some(full),
+            cycles: None,
+            voltage: None,
+            technology: None,
+            charge_start: None,
+            charge_end: None,
         }
     }
 
@@ -375,7 +483,7 @@ mod tests {
     fn text_reports_the_cord_and_the_battery() {
         let reading = laptop(State::Unplugged, bat("BAT0", Status::Discharging, 85.0, Some(3.99)));
         assert_eq!(
-            text(Scope::All, &reading, &Config::default(), false),
+            text(Scope::All, &reading, &Config::default(), false, false),
             "AC: unplugged\nBAT0: discharging 85% (3h 59m remaining)"
         );
     }
@@ -384,7 +492,7 @@ mod tests {
     fn charging_is_captioned_as_time_until_full() {
         let reading = laptop(State::Plugged, bat("BAT0", Status::Charging, 40.0, Some(1.5)));
         assert_eq!(
-            text(Scope::All, &reading, &Config::default(), false),
+            text(Scope::All, &reading, &Config::default(), false, false),
             "AC: plugged in\nBAT0: charging 40% (1h 30m until full)"
         );
     }
@@ -393,7 +501,7 @@ mod tests {
     fn a_battery_with_no_runtime_drops_that_part_of_the_line() {
         let reading = laptop(State::Unplugged, bat("BAT0", Status::Discharging, 85.0, None));
         assert_eq!(
-            text(Scope::Battery, &reading, &Config::default(), false),
+            text(Scope::Battery, &reading, &Config::default(), false, false),
             "BAT0: discharging 85%"
         );
     }
@@ -408,7 +516,7 @@ mod tests {
             ],
         };
         assert_eq!(
-            text(Scope::All, &reading, &Config::default(), false),
+            text(Scope::All, &reading, &Config::default(), false, false),
             "AC: unplugged\n\
              Battery: discharging 60% (2h 00m remaining)\n\
              \x20 BAT0: discharging 80% (2h 00m remaining)\n\
@@ -420,9 +528,9 @@ mod tests {
     fn scope_narrows_the_report() {
         let reading = laptop(State::Unplugged, bat("BAT0", Status::Discharging, 85.0, Some(3.99)));
         let config = Config::default();
-        assert_eq!(text(Scope::Ac, &reading, &config, false), "AC: unplugged");
+        assert_eq!(text(Scope::Ac, &reading, &config, false, false), "AC: unplugged");
         assert_eq!(
-            text(Scope::Battery, &reading, &config, false),
+            text(Scope::Battery, &reading, &config, false, false),
             "BAT0: discharging 85% (3h 59m remaining)"
         );
     }
@@ -442,8 +550,8 @@ mod tests {
         assert_eq!(shade(Status::Discharging, 85.0), Colour::DEFAULT);
         assert_eq!(shade(Status::Charging, 85.0), Colour::GREEN);
         assert_eq!(shade(Status::Full, 100.0), Colour::GREEN);
-        // A deliberate hold at a charge threshold is not a problem.
-        assert_eq!(shade(Status::NotCharging, 80.0), Colour::DEFAULT);
+        // Plugged in and holding at full is good news, not a neutral state.
+        assert_eq!(shade(Status::NotCharging, 80.0), Colour::GREEN);
         // Low enough to plan around, then low enough to act on.
         assert_eq!(shade(Status::Discharging, 25.0), Colour::YELLOW);
         assert_eq!(shade(Status::Discharging, 10.0), Colour::RED);
@@ -474,7 +582,7 @@ mod tests {
         config.palette.unplugged = Colour::MAGENTA;
         let reading = laptop(State::Unplugged, bat("BAT0", Status::Discharging, 85.0, None));
         assert_eq!(
-            text(Scope::All, &reading, &config, true),
+            text(Scope::All, &reading, &config, true, false),
             "\x1b[35mAC: unplugged\x1b[0m\n\x1b[36mBAT0: discharging 85%\x1b[0m"
         );
     }
@@ -487,8 +595,93 @@ mod tests {
                 .unwrap();
         let reading = laptop(State::Unplugged, bat("BAT0", Status::Discharging, 12.0, Some(0.5)));
         assert_eq!(
-            text(Scope::Battery, &reading, &config, false),
+            text(Scope::Battery, &reading, &config, false, false),
             "BAT0 critical 12% / 30m"
+        );
+    }
+
+    /// A battery with every supporting attribute the readers know about.
+    fn detailed() -> Battery {
+        Battery {
+            name: "BAT0".to_string(),
+            status: Status::NotCharging,
+            percent: Some(97.0),
+            unit: Some(Unit::Energy),
+            now: Some(38_020_000.0),
+            full: Some(39_370_000.0),
+            rate: Some(0.0),
+            design: Some(39_300_000.0),
+            cycles: Some(296),
+            voltage: Some(13_013_000.0),
+            technology: Some("Li-poly".to_string()),
+            charge_start: Some(0),
+            charge_end: Some(100),
+        }
+    }
+
+    #[test]
+    fn full_adds_an_aligned_block_of_supporting_numbers() {
+        let reading = Reading { sources: vec![], batteries: vec![detailed()] };
+        assert_eq!(
+            text(Scope::Battery, &reading, &Config::default(), false, true),
+            "BAT0: not charging 97%\n\
+             \x20 charge  38.02 Wh of 39.37 Wh\n\
+             \x20 health  100% of design (39.30 Wh)\n\
+             \x20 rate    0.00 W at 13.013 V\n\
+             \x20 cycles  296\n\
+             \x20 limits  none set\n\
+             \x20 type    Li-poly"
+        );
+    }
+
+    #[test]
+    fn without_full_the_supporting_numbers_stay_out_of_the_way() {
+        let reading = Reading { sources: vec![], batteries: vec![detailed()] };
+        assert_eq!(
+            text(Scope::Battery, &reading, &Config::default(), false, false),
+            "BAT0: not charging 97%"
+        );
+    }
+
+    #[test]
+    fn a_set_charge_limit_is_spelled_out() {
+        let limited = Battery { charge_start: Some(75), charge_end: Some(80), ..detailed() };
+        let rows = battery_detail(&limited);
+        let limits = rows.iter().find(|(label, _)| *label == "limits").unwrap();
+        assert_eq!(limits.1, "resume below 75%, stop at 80%");
+    }
+
+    #[test]
+    fn rows_the_driver_does_not_publish_are_left_out() {
+        let bare = Battery {
+            design: None,
+            cycles: None,
+            voltage: None,
+            technology: None,
+            charge_start: None,
+            charge_end: None,
+            ..detailed()
+        };
+        let labels: Vec<&str> = battery_detail(&bare).iter().map(|(label, _)| *label).collect();
+        assert_eq!(labels, ["charge", "rate"]);
+        // No voltage to append, so the rate row stands alone.
+        assert_eq!(battery_detail(&bare)[1].1, "0.00 W");
+    }
+
+    #[test]
+    fn several_adapters_are_broken_out_in_the_detail() {
+        let reading = Reading {
+            sources: vec![
+                ac_source("usb1", State::Unplugged),
+                ac_source("usb2", State::Plugged),
+            ],
+            batteries: vec![],
+        };
+        assert_eq!(
+            text(Scope::Ac, &reading, &Config::default(), false, true),
+            "External power: plugged in\n\
+             \x20 usb1  Mains, offline\n\
+             \x20 usb2  Mains, online"
         );
     }
 
@@ -499,15 +692,15 @@ mod tests {
             batteries: vec![],
         };
         let config = Config::default();
-        assert_eq!(text(Scope::Ac, &reading, &config, false), "AC: plugged in");
-        assert_eq!(text(Scope::Ac, &reading, &config, true), "\x1b[32mAC: plugged in\x1b[0m");
+        assert_eq!(text(Scope::Ac, &reading, &config, false, false), "AC: plugged in");
+        assert_eq!(text(Scope::Ac, &reading, &config, true, false), "\x1b[32mAC: plugged in\x1b[0m");
     }
 
     #[test]
     fn each_line_is_shaded_on_its_own() {
         let reading = laptop(State::Unplugged, bat("BAT0", Status::Discharging, 10.0, None));
         assert_eq!(
-            text(Scope::All, &reading, &Config::default(), true),
+            text(Scope::All, &reading, &Config::default(), true, false),
             "\x1b[33mAC: unplugged\x1b[0m\n\x1b[31mBAT0: discharging 10%\x1b[0m"
         );
     }
@@ -524,7 +717,7 @@ mod tests {
             Reading { sources: vec![ac_source("AC", State::Plugged)], batteries: vec![] };
         assert_eq!(
             waybar(Scope::Ac, &reading, &Config::default()).to_json(),
-            r#"{"text":"AC","alt":"plugged","class":["plugged"],"tooltip":"AC: plugged in"}"#
+            r#"{"text":"AC","alt":"plugged","class":["plugged"],"tooltip":"AC: plugged in\n  type  Mains"}"#
         );
     }
 
@@ -533,7 +726,7 @@ mod tests {
         let reading = laptop(State::Unplugged, bat("BAT0", Status::Discharging, 12.0, Some(0.5)));
         assert_eq!(
             waybar(Scope::Battery, &reading, &Config::default()).to_json(),
-            r#"{"text":"12% 30m","alt":"discharging","class":["discharging","critical"],"tooltip":"BAT0: discharging 12% (30m remaining)","percentage":12}"#
+            r#"{"text":"12% 30m","alt":"discharging","class":["discharging","critical"],"tooltip":"BAT0: discharging 12% (30m remaining)\n  charge  12.00 Wh of 100.00 Wh\n  health  100% of design (100.00 Wh)\n  rate    24.00 W","percentage":12}"#
         );
     }
 
@@ -568,7 +761,7 @@ mod tests {
         };
         assert_eq!(
             waybar(Scope::Ac, &reading, &Config::default()).to_json(),
-            r#"{"text":"a\"b\\c","alt":"plugged","class":["plugged"],"tooltip":"a\"b\\c: plugged in"}"#
+            r#"{"text":"a\"b\\c","alt":"plugged","class":["plugged"],"tooltip":"a\"b\\c: plugged in\n  type  Mains"}"#
         );
     }
 }

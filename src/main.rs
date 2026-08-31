@@ -34,6 +34,9 @@ What to report (default: both):
 Output:
     -w, --waybar          Emit one JSON object for a waybar custom module
                           (use with \"return-type\": \"json\").
+    -f, --full            Add the supporting numbers under each line: charge,
+                          health, rate, cycle count and any charge limit. The
+                          waybar tooltip always carries these.
     -q, --quiet           Print nothing; exit 0 on external power, 1 on battery.
                           Unaffected by --ac / --battery.
         --color <WHEN>    Colour the text output: auto (default), always, never.
@@ -66,6 +69,7 @@ Exit status:
 /// config file, and failing that by the built-in default.
 struct Options {
     scope: Option<Scope>,
+    full: bool,
     waybar: bool,
     quiet: bool,
     colour: Option<ColourWhen>,
@@ -86,6 +90,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, Early> {
     let (mut want_ac, mut want_battery) = (false, false);
     let mut options = Options {
         scope: None,
+        full: false,
         waybar: false,
         quiet: false,
         colour: None,
@@ -106,6 +111,7 @@ fn parse_args(args: impl Iterator<Item = String>) -> Result<Options, Early> {
             }
             "--ac" => want_ac = true,
             "--battery" => want_battery = true,
+            "-f" | "--full" => options.full = true,
             "-w" | "--waybar" | "--json" => options.waybar = true,
             "-q" | "--quiet" => options.quiet = true,
             "-a" | "--adapter" => match args.next() {
@@ -281,7 +287,10 @@ fn main() -> ExitCode {
     if options.waybar {
         println!("{}", render::waybar(settings.scope, &reading, &settings.config).to_json());
     } else {
-        println!("{}", render::text(settings.scope, &reading, &settings.config, colour));
+        println!(
+            "{}",
+            render::text(settings.scope, &reading, &settings.config, colour, options.full)
+        );
     }
     ExitCode::SUCCESS
 }
@@ -396,7 +405,7 @@ mod tests {
         let settings = settings(&[], "");
         let reading = read(root.path(), &settings).unwrap();
         assert_eq!(
-            render::text(Scope::All, &reading, &settings.config, false),
+            render::text(Scope::All, &reading, &settings.config, false, false),
             "AC: unplugged\nBAT0: discharging 85% (3h 59m remaining)"
         );
     }
@@ -411,7 +420,7 @@ mod tests {
         let settings = settings(&["--battery"], file);
         let reading = read(root.path(), &settings).unwrap();
         assert_eq!(
-            render::text(Scope::Battery, &reading, &settings.config, true),
+            render::text(Scope::Battery, &reading, &settings.config, true, false),
             "\x1b[35mBAT0 50% warning\x1b[0m"
         );
     }
@@ -423,7 +432,7 @@ mod tests {
         // ...but the default scope still reports the cord on such a machine.
         let default = settings(&[], "");
         let reading = read(root.path(), &default).unwrap();
-        assert_eq!(render::text(Scope::All, &reading, &default.config, false), "AC: plugged in");
+        assert_eq!(render::text(Scope::All, &reading, &default.config, false, false), "AC: plugged in");
     }
 
     #[test]
@@ -435,7 +444,7 @@ mod tests {
         let default = settings(&[], "");
         let reading = read(root.path(), &default).unwrap();
         assert_eq!(
-            render::text(Scope::All, &reading, &default.config, false),
+            render::text(Scope::All, &reading, &default.config, false, false),
             "BAT0: discharging 50%"
         );
         // Asking for the adapter alone on that machine is still an error.

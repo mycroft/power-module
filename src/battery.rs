@@ -133,6 +133,24 @@ pub enum Unit {
     Charge,
 }
 
+impl Unit {
+    /// What a capacity reads as once scaled out of micro-units.
+    pub fn capacity_suffix(self) -> &'static str {
+        match self {
+            Unit::Energy => "Wh",
+            Unit::Charge => "Ah",
+        }
+    }
+
+    /// What a rate reads as.
+    pub fn rate_suffix(self) -> &'static str {
+        match self {
+            Unit::Energy => "W",
+            Unit::Charge => "A",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Battery {
     pub name: String,
@@ -146,6 +164,27 @@ pub struct Battery {
     pub full: Option<f64>,
     /// Charge or discharge rate, always a magnitude.
     pub rate: Option<f64>,
+    /// Contents when new, in `unit`; `full` against this is the pack's health.
+    pub design: Option<f64>,
+    pub cycles: Option<i64>,
+    /// Terminal voltage, in µV.
+    pub voltage: Option<f64>,
+    pub technology: Option<String>,
+    /// The percentages charging resumes at and stops at, where the firmware
+    /// exposes them. `0` and `100` mean no limit is set.
+    pub charge_start: Option<i64>,
+    pub charge_end: Option<i64>,
+}
+
+impl Battery {
+    /// `full` as a percentage of `design`: how much of its original capacity
+    /// the pack still holds.
+    pub fn health(&self) -> Option<f64> {
+        match (self.full, self.design) {
+            (Some(full), Some(design)) if design > 0.0 => Some(full / design * 100.0),
+            _ => None,
+        }
+    }
 }
 
 /// How long until this battery is empty (discharging) or full (charging).
@@ -181,12 +220,29 @@ fn read_battery(dir: &Path) -> Option<Battery> {
     let status = Status::parse(&sysfs::attr(dir, "status").unwrap_or_default());
     let magnitude = |attr: &str| sysfs::attr_i64(dir, attr).map(|value| value.abs() as f64);
 
-    let (unit, now, full, rate) = if let Some(now) = magnitude("energy_now") {
-        (Some(Unit::Energy), Some(now), magnitude("energy_full"), magnitude("power_now"))
+    let (unit, now, full, rate, design) = if let Some(now) = magnitude("energy_now") {
+        (
+            Some(Unit::Energy),
+            Some(now),
+            magnitude("energy_full"),
+            magnitude("power_now"),
+            magnitude("energy_full_design"),
+        )
     } else if let Some(now) = magnitude("charge_now") {
-        (Some(Unit::Charge), Some(now), magnitude("charge_full"), magnitude("current_now"))
+        (
+            Some(Unit::Charge),
+            Some(now),
+            magnitude("charge_full"),
+            magnitude("current_now"),
+            magnitude("charge_full_design"),
+        )
     } else {
-        (None, None, None, None)
+        (None, None, None, None, None)
+    };
+
+    // The standard ABI first, then the older names some vendor drivers kept.
+    let threshold = |modern: &str, legacy: &str| {
+        sysfs::attr_i64(dir, modern).or_else(|| sysfs::attr_i64(dir, legacy))
     };
 
     // `capacity` is what the kernel itself reports; the ratio is the fallback
@@ -199,7 +255,21 @@ fn read_battery(dir: &Path) -> Option<Battery> {
         })
         .map(|percent| percent.clamp(0.0, 100.0));
 
-    Some(Battery { name: sysfs::name_of(dir), status, percent, unit, now, full, rate })
+    Some(Battery {
+        name: sysfs::name_of(dir),
+        status,
+        percent,
+        unit,
+        now,
+        full,
+        rate,
+        design,
+        cycles: sysfs::attr_i64(dir, "cycle_count"),
+        voltage: magnitude("voltage_now"),
+        technology: sysfs::attr(dir, "technology").filter(|text| !text.is_empty()),
+        charge_start: threshold("charge_control_start_threshold", "charge_start_threshold"),
+        charge_end: threshold("charge_control_end_threshold", "charge_stop_threshold"),
+    })
 }
 
 /// Every battery present in the machine, in stable order.

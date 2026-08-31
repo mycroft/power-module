@@ -34,7 +34,8 @@ unplugged = "yellow"
 charging = "green"
 full = "green"
 discharging = "default"     # "default" is the terminal's own foreground
-not_charging = "default"    # held at a charge threshold: deliberate, not a problem
+not_charging = "green"      # plugged in and holding: nothing to do
+                            # set discharging = "green" to colour that case too
 
 # The battery, when it is not. These override the four above.
 warning = "yellow"

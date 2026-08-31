@@ -84,7 +84,8 @@ impl Default for Palette {
             charging: Colour::GREEN,
             discharging: Colour::DEFAULT,
             full: Colour::GREEN,
-            not_charging: Colour::DEFAULT,
+            // Plugged in and holding: nothing to do, same as charging.
+            not_charging: Colour::GREEN,
             warning: Colour::YELLOW,
             critical: Colour::RED,
             critical_charging: Colour::YELLOW,
